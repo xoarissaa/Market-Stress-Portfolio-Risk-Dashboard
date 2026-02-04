@@ -57,3 +57,40 @@ class PerformanceMetrics:
         mdd = abs(PerformanceMetrics.max_drawdown(returns))
         if mdd == 0: return 0
         return cagr_val / mdd
+
+    @staticmethod
+    def downside_capture_ratio(portfolio_returns, benchmark_returns):
+        """
+        Calculates Downside Capture Ratio vs Benchmark.
+        Measures how much of the benchmark's downside the portfolio captures.
+        
+        DCR < 1.0 means the portfolio falls less than the benchmark during down markets (good)
+        DCR > 1.0 means the portfolio falls more than the benchmark during down markets (bad)
+        
+        :param portfolio_returns: Portfolio daily returns (pd.Series)
+        :param benchmark_returns: Benchmark daily returns (pd.Series)
+        :return: Downside capture ratio
+        """
+        # Align the two series
+        df = pd.DataFrame({
+            'portfolio': portfolio_returns,
+            'benchmark': benchmark_returns
+        }).dropna()
+        
+        # Filter for days when benchmark is negative
+        down_market = df[df['benchmark'] < 0]
+        
+        if down_market.empty or len(down_market) < 2:
+            return 0.0
+        
+        # Average returns during down markets
+        avg_portfolio_down = down_market['portfolio'].mean()
+        avg_benchmark_down = down_market['benchmark'].mean()
+        
+        if avg_benchmark_down == 0:
+            return 0.0
+        
+        # Capture ratio (both are negative, so ratio is positive)
+        capture = avg_portfolio_down / avg_benchmark_down
+        return capture
+

@@ -1,5 +1,7 @@
 import pandas as pd
+import numpy as np
 import yfinance as yf
+from datetime import datetime
 from src.metrics import PerformanceMetrics
 
 class Portfolio:
@@ -9,15 +11,56 @@ class Portfolio:
     def __init__(self, positions, initial_capital=10000):
         """
         :param positions: Dictionary {ticker: weight}, e.g., {'SPY': 0.6, 'TLT': 0.4}
+                         Weights can be percentages (60, 40) or decimals (0.6, 0.4)
         :param initial_capital: Starting value for equity curve (default 10k)
         """
-        self.positions = positions
-        self.tickers = list(positions.keys())
-        self.weights = pd.Series(positions)
+        self.validate_portfolio(positions)
+        self.positions = self.normalize_weights(positions)
+        self.tickers = list(self.positions.keys())
+        self.weights = pd.Series(self.positions)
         self.initial_capital = initial_capital
         self.data = None
         self.returns = None
         self.portfolio_returns = None
+    
+    def validate_portfolio(self, positions):
+        """
+        Validates portfolio configuration.
+        Raises ValueError if portfolio is invalid.
+        """
+        if not positions:
+            raise ValueError("Portfolio cannot be empty. Please provide at least one ticker.")
+        
+        if not isinstance(positions, dict):
+            raise TypeError("Positions must be a dictionary of {ticker: weight}")
+        
+        for ticker, weight in positions.items():
+            if not isinstance(ticker, str) or not ticker.strip():
+                raise ValueError(f"Invalid ticker: {ticker}")
+            if not isinstance(weight, (int, float)) or weight < 0:
+                raise ValueError(f"Weight for {ticker} must be a non-negative number, got {weight}")
+    
+    def normalize_weights(self, positions):
+        """
+        Normalizes weights to sum to 1.0.
+        Handles both percentage (60, 40) and decimal (0.6, 0.4) inputs.
+        
+        :param positions: Dictionary {ticker: weight}
+        :return: Normalized dictionary with weights summing to 1.0
+        """
+        total = sum(positions.values())
+        
+        if total == 0:
+            raise ValueError("Total weight cannot be zero")
+        
+        # Normalize
+        normalized = {ticker: weight / total for ticker, weight in positions.items()}
+        
+        # Warn if original weights were far from 1.0 or 100
+        if not (0.99 <= total <= 1.01 or 99 <= total <= 101):
+            print(f"⚠️  Weights normalized: {total:.2f} → 1.0")
+        
+        return normalized
 
     def fetch_data(self, start_date="2010-01-01", end_date=None):
         """
@@ -70,9 +113,19 @@ class Portfolio:
         """
         Returns a dictionary of metrics for the portfolio in a specific date range.
         Useful for 'Regime Analysis'.
+        
+        :param start_date: Start date (str 'YYYY-MM-DD', datetime, or pd.Timestamp)
+        :param end_date: End date (str 'YYYY-MM-DD', datetime, or pd.Timestamp)
+        :return: Dictionary of performance metrics
         """
         if self.portfolio_returns is None:
             return {}
+        
+        # Convert dates to pandas Timestamp for robust comparison
+        if start_date is not None:
+            start_date = pd.Timestamp(start_date)
+        if end_date is not None:
+            end_date = pd.Timestamp(end_date)
             
         # Filter range
         f_rets = self.portfolio_returns
@@ -91,6 +144,41 @@ class Portfolio:
             "Sharpe Ratio": PerformanceMetrics.sharpe_ratio(f_rets),
             "Max Drawdown": PerformanceMetrics.max_drawdown(f_rets),
             "Sortino Ratio": PerformanceMetrics.sortino_ratio(f_rets)
+        }
+        return metrics
+    
+    def get_regime_conditional_metrics(self, regime_series, regime_code):
+        """
+        Calculate performance metrics for periods matching a specific regime.
+        
+        :param regime_series: pd.Series with regime labels, indexed by date
+        :param regime_code: The regime code to filter (e.g., 0, 1, 2)
+        :return: Dictionary of metrics for the specified regime periods
+        """
+        if self.portfolio_returns is None:
+            raise ValueError("Portfolio returns not calculated. Call fetch_data() first.")
+        
+        # Align regime data with portfolio returns
+        aligned = pd.DataFrame({
+            'returns': self.portfolio_returns,
+            'regime': regime_series
+        }).dropna()
+        
+        # Filter by regime
+        regime_returns = aligned[aligned['regime'] == regime_code]['returns']
+        
+        if len(regime_returns) == 0:
+            return {"Error": f"No data for regime {regime_code}"}
+        
+        # Calculate metrics for this regime only
+        metrics = {
+            "Total Return": PerformanceMetrics.total_return(regime_returns),
+            "CAGR": PerformanceMetrics.cagr(regime_returns),
+            "Volatility": PerformanceMetrics.volatility(regime_returns),
+            "Sharpe Ratio": PerformanceMetrics.sharpe_ratio(regime_returns),
+            "Max Drawdown": PerformanceMetrics.max_drawdown(regime_returns),
+            "Sortino Ratio": PerformanceMetrics.sortino_ratio(regime_returns),
+            "Days in Regime": len(regime_returns)
         }
         return metrics
 
