@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import numpy as np
 from src.market_regime import MarketRegimeDetector
 from src.portfolio import Portfolio
+from src.risk_engine import RiskEngine
 from datetime import datetime
 
 # Set Page Config
@@ -199,7 +200,6 @@ with tab2:
                     st.plotly_chart(fig_growth, use_container_width=True)
 
 # --- Tab 3: Future Risk Lab ---
-from src.risk_engine import RiskEngine
 
 with tab3:
     st.header("🔮 Future Wealth Projection")
