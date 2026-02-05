@@ -12,16 +12,30 @@ from datetime import datetime
 st.set_page_config(page_title="Market Stress & Portfolio Monitor", page_icon="📉", layout="wide")
 
 # Title
-st.title("📉 Market Stress & Portfolio Context")
-st.markdown("""
-**System Status**: Unified Dashboard Active.
-*Monitor market 'weather' and check how your portfolio ships sail in these conditions.*
-""")
+st.title("📉 Market Stress & Portfolio Monitor")
+st.caption("**System Status**: Unified Dashboard Active. *Monitor market 'weather' and check how your portfolio ships sail in these conditions.*")
 
-# --- Ticker Universe (From GitHub) ---
-US_ETFS = ["SPY", "VTI", "SCHD", "BND", "SPLV", "IAU", "QUAL", "MOAT", "QUS"]
-CAD_ETFS = ["XIC.TO", "VCN.TO", "VDY.TO", "ZAG.TO", "VFV.TO", "ZLB.TO"]
-ALL_TICKERS = sorted(list(set(US_ETFS + CAD_ETFS + ['TLT', 'IEF', 'GLD']))) # Add common ones
+# --- Expanded Ticker Universe ---
+# US Equity ETFs
+US_EQUITY = ["SPY", "VTI", "QQQ", "IWM", "VTV", "VUG", "VOO", "SCHD", "SPLV", "QUAL", "MOAT", "QUS", "VIG", "DGRO"]
+
+# US Bond ETFs
+US_BONDS = ["BND", "AGG", "TLT", "IEF", "SHY", "LQD", "HYG", "MUB", "TIP"]
+
+# International ETFs
+INTERNATIONAL = ["VEA", "VWO", "IEFA", "IEMG", "EFA", "EEM", "VXUS"]
+
+# Sector ETFs
+SECTORS = ["XLK", "XLV", "XLF", "XLE", "XLY", "XLP", "XLI", "XLU", "XLRE", "XLC", "XLB"]
+
+# Commodity & Alternative ETFs
+COMMODITIES = ["GLD", "IAU", "SLV", "DBC", "USO", "UNG"]
+
+# Canadian ETFs
+CAD_ETFS = ["XIC.TO", "VCN.TO", "VDY.TO", "ZAG.TO", "VFV.TO", "ZLB.TO", "XEF.TO", "XEC.TO"]
+
+# Combine all
+ALL_TICKERS = sorted(list(set(US_EQUITY + US_BONDS + INTERNATIONAL + SECTORS + COMMODITIES + CAD_ETFS)))
 
 # --- Load Market Data ---
 @st.cache_data
@@ -34,16 +48,45 @@ def load_market_data():
 
 market_df = load_market_data()
 
+# --- Sidebar: Data Management ---
+with st.sidebar:
+    st.header("⚙️ Data Management")
+    if st.button("🔄 Refresh Market Data", help="Fetch latest data from yfinance and re-train regime model"):
+        with st.spinner("Fetching latest data from yfinance..."):
+            from src.data_loader import MarketDataLoader
+            from src.market_regime import MarketRegimeDetector
+            
+            try:
+                # 1. Fetch
+                loader = MarketDataLoader()
+                loader.fetch_data()
+                
+                # 2. Detect Regimes
+                detector = MarketRegimeDetector()
+                feat_df = detector.load_and_engineer_features()
+                detector.train_model(feat_df)
+                
+                st.cache_data.clear()
+                st.success("Data refreshed successfully!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to refresh data: {e}")
+    
+    st.divider()
+    st.caption("Last data point: " + (market_df.index.max().strftime('%Y-%m-%d') if market_df is not None else "None found"))
+
+
 # --- Load Definitions ---
 from src.definitions import RegimeDefinitions
+from src.comparison_engine import ComparisonEngine, format_comparison_table
+from src.regime_context import RegimeContext
 
 # --- Tabs ---
-# --- Tabs ---
-tab1, tab2, tab3, tab4 = st.tabs(["🌪️ Market Stress Monitor", "💼 Context-Aware Portfolio", "🔮 Future Wealth Projection", "📘 User Guide"])
+tab1, tab2, tab3, tab4 = st.tabs(["🌪️ Market Stress Monitor", "⚖️ Compare Portfolios / ETFs", "🔮 Future Wealth Projection", "📘 User Guide"])
 
 with tab1:
     if market_df is None:
-        st.error("Market Data not found. Run pipeline first.")
+        st.error("Market Data not found. Please click 'Refresh Market Data' in the sidebar to download data from yfinance.")
     else:
         # Latest Data Point
         latest = market_df.iloc[-1]
@@ -81,123 +124,211 @@ with tab1:
         with c4: st.line_chart(market_df['Yield_Curve'].tail(252)); st.caption("Yield Curve (10Y-13W)")
 
 with tab2:
-    st.header("Context-Aware Portfolio Analysis")
+    st.header("⚖️ Compare Portfolios / ETFs")
+    st.caption("Compare two portfolios side-by-side with regime-conditional analysis. Individual ETFs are treated as 100% portfolios.")
     
-    col_config, col_res = st.columns([1, 3])
-    
-    with col_config:
-        st.subheader("1. Build Portfolio")
-        selected_tickers = st.multiselect("Select Assets", ALL_TICKERS, default=["SPY", "TLT"])
+    if market_df is None:
+        st.error("Market Data not found. Run pipeline first.")
+    else:
+        # --- Side-by-Side Portfolio Builders ---
+        col_a, col_b = st.columns(2)
         
-        weights = {}
-        st.write("Assign Weights:")
-        total_weight = 0
-        for t in selected_tickers:
-            w = st.slider(f"{t} %", 0, 100, int(100/len(selected_tickers)) if len(selected_tickers) > 0 else 0, key=f"w_{t}")
-            weights[t] = w / 100.0
-            total_weight += w
+        with col_a:
+            st.subheader("📊 Portfolio A")
             
-        if total_weight != 100:
-            st.warning(f"Total Weight: {total_weight}%. Please sum to 100%.")
+            # Quick presets
+            preset_a = st.selectbox(
+                "Quick Preset A",
+                ["Custom", "SPY (100%)", "60/40 SPY/TLT", "All Weather", "QQQ (100%)"],
+                key="preset_a"
+            )
             
-        run_analysis = st.button("Run Context Analysis")
-
-    with col_res:
-        if run_analysis and market_df is not None:
-            st.subheader("2. Performance vs Regimes")
+            if preset_a == "SPY (100%)":
+                selected_a = ["SPY"]
+                weights_a = {"SPY": 100}
+            elif preset_a == "60/40 SPY/TLT":
+                selected_a = ["SPY", "TLT"]
+                weights_a = {"SPY": 60, "TLT": 40}
+            elif preset_a == "All Weather":
+                selected_a = ["SPY", "TLT", "IEF", "GLD", "DBC"]
+                weights_a = {"SPY": 30, "TLT": 40, "IEF": 15, "GLD": 7.5, "DBC": 7.5}
+            elif preset_a == "QQQ (100%)":
+                selected_a = ["QQQ"]
+                weights_a = {"QQQ": 100}
+            else:
+                selected_a = st.multiselect("Select Assets A", ALL_TICKERS, default=["SPY"], key="assets_a")
+                weights_a = {}
+                if selected_a:
+                    st.write("Assign Weights:")
+                    for t in selected_a:
+                        w = st.slider(f"{t} %", 0, 100, int(100/len(selected_a)), key=f"w_a_{t}")
+                        weights_a[t] = w
             
-            with st.spinner("Fetching Portfolio Data & Analyzing..."):
-                # 1. Init Portfolio
-                port = Portfolio(weights)
-                
-                # 2. Fetch Data (Align date range with market_df)
-                start_date = market_df.index.min().strftime('%Y-%m-%d')
-                port.fetch_data(start_date=start_date)
-                
-                # 3. Merge Portfolio Returns with Regime Labels
-                # Ensure indices match
-                p_rets = port.portfolio_returns.to_frame(name='Portfolio_Ret')
-                merged = p_rets.join(market_df['Regime_Label'], how='inner')
-                
-                if merged.empty:
-                    st.error("No overlapping data between Portfolio and Regimes.")
-                else:
-                    # 4. Total Stats
-                    stats = port.get_performance_summary()
+            total_a = sum(weights_a.values()) if weights_a else 0
+            if total_a != 100 and weights_a:
+                st.warning(f"Total: {total_a}% (will auto-normalize)")
+            else:
+                st.success(f"✅ Total: {total_a}%")
+        
+        with col_b:
+            st.subheader("📊 Portfolio B")
+            
+            # Quick presets
+            preset_b = st.selectbox(
+                "Quick Preset B",
+                ["Custom", "SPY (100%)", "60/40 SPY/TLT", "All Weather", "QQQ (100%)"],
+                key="preset_b"
+            )
+            
+            if preset_b == "SPY (100%)":
+                selected_b = ["SPY"]
+                weights_b = {"SPY": 100}
+            elif preset_b == "60/40 SPY/TLT":
+                selected_b = ["SPY", "TLT"]
+                weights_b = {"SPY": 60, "TLT": 40}
+            elif preset_b == "All Weather":
+                selected_b = ["SPY", "TLT", "IEF", "GLD", "DBC"]
+                weights_b = {"SPY": 30, "TLT": 40, "IEF": 15, "GLD": 7.5, "DBC": 7.5}
+            elif preset_b == "QQQ (100%)":
+                selected_b = ["QQQ"]
+                weights_b = {"QQQ": 100}
+            else:
+                selected_b = st.multiselect("Select Assets B", ALL_TICKERS, default=["TLT"], key="assets_b")
+                weights_b = {}
+                if selected_b:
+                    st.write("Assign Weights:")
+                    for t in selected_b:
+                        w = st.slider(f"{t} %", 0, 100, int(100/len(selected_b)), key=f"w_b_{t}")
+                        weights_b[t] = w
+            
+            total_b = sum(weights_b.values()) if weights_b else 0
+            if total_b != 100 and weights_b:
+                st.warning(f"Total: {total_b}% (will auto-normalize)")
+            else:
+                st.success(f"✅ Total: {total_b}%")
+        
+        # --- Compare Button ---
+        st.markdown("---")
+        compare_btn = st.button("🔍 Compare Portfolios", type="primary", use_container_width=True)
+        
+        if compare_btn and weights_a and weights_b:
+            with st.spinner("Fetching data and analyzing..."):
+                try:
+                    # Create portfolios
+                    port_a = Portfolio(weights_a)
+                    port_b = Portfolio(weights_b)
                     
-                    # 5. Conditional Stats (The "Context")
-                    regime_stats = []
+                    # Fetch data
+                    start_date = market_df.index.min().strftime('%Y-%m-%d')
                     
-                    for r_code in sorted(market_df['Regime_Label'].unique()):
-                        r_name = RegimeDefinitions.LABELS.get(r_code, f"Regime {r_code}")
-                        
-                        subset = merged[merged['Regime_Label'] == r_code]['Portfolio_Ret']
-                        if not subset.empty:
-                            ann_ret = subset.mean() * 252
-                            ann_vol = subset.std() * np.sqrt(252)
-                            sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
-                            regime_stats.append({
-                                "Regime": r_name,
-                                "Ann Return": f"{ann_ret:.1%}",
-                                "Ann Volatility": f"{ann_vol:.1%}",
-                                "Sharpe": f"{sharpe:.2f}",
-                                "Daily VaR (95%)": f"{subset.quantile(0.05):.1%}"
-                            })
+                    try:
+                        port_a.fetch_data(start_date=start_date)
+                    except ValueError as e:
+                        st.error(f"Failed to fetch data for Portfolio A: {e}")
+                        st.stop()
                     
-                    # Display
-                    r1, r2 = st.columns(2)
-                    with r1:
-                        st.markdown("#### Overall Performance")
-                        st.dataframe(pd.DataFrame([stats]).T)
-                        
-                    with r2:
-                        st.markdown("#### Performance by Market Regime")
-                        st.table(pd.DataFrame(regime_stats))
+                    try:
+                        port_b.fetch_data(start_date=start_date)
+                    except ValueError as e:
+                        st.error(f"Failed to fetch data for Portfolio B: {e}")
+                        st.stop()
                     
-                    # --- 3. Risk Diagnostics ---
-                    st.subheader("3. Risk Diagnostics")
+                    # Debug: Show date ranges
+                    with st.expander("🛠️ Debug Data Info", expanded=False):
+                        st.write(f"- Portfolio A dates: {port_a.portfolio_returns.index.min()} to {port_a.portfolio_returns.index.max()} ({len(port_a.portfolio_returns)} days)")
+                        st.write(f"- Portfolio B dates: {port_b.portfolio_returns.index.min()} to {port_b.portfolio_returns.index.max()} ({len(port_b.portfolio_returns)} days)")
+                        st.write(f"- Market data dates: {market_df.index.min()} to {market_df.index.max()} ({len(market_df)} days)")
                     
-                    # Prepare Benchmark Data
+                    # Get regime labels - try RegimeContext first, fallback to market_df
+                    try:
+                        regime_ctx = RegimeContext()
+                        regime_ctx.load_regime_data()
+                        regime_labels = regime_ctx.get_regime_labels()
+                    except (FileNotFoundError, Exception) as e:
+                        st.warning(f"Using regime labels from market data (RegimeContext unavailable: {e})")
+                        regime_labels = market_df['Regime_Label']
+                    
+                    # Get SPY benchmark
                     spy_prices = market_df['SPY']
                     spy_rets = spy_prices.pct_change().dropna()
                     
-                    # Align Portfolio and Benchmark
-                    params_diagnostics = pd.concat([port.portfolio_returns, spy_rets], axis=1).dropna()
-                    params_diagnostics.columns = ['Portfolio', 'SPY']
+                    # Create comparison engine
+                    engine = ComparisonEngine(port_a, port_b, regime_labels, spy_rets)
                     
-                    # A. Rolling Correlation (Hedge Monitor)
-                    roll_corr = RiskEngine.rolling_correlation(params_diagnostics['Portfolio'], params_diagnostics['SPY'], window=60)
+                    # --- Overall Comparison ---
+                    st.markdown("---")
+                    st.subheader("📊 Overall Comparison")
                     
-                    # B. Downside Capture
-                    dcr = RiskEngine.calculate_downside_capture(params_diagnostics['Portfolio'], params_diagnostics['SPY'])
+                    overall = engine.compare_overall_metrics()
+                    overall_df = format_comparison_table(overall)
                     
-                    # Display
-                    d_col1, d_col2 = st.columns([2, 1])
+                    # Format the dataframe for display
+                    def highlight_winner(row):
+                        if row['Winner'] == 'A':
+                            return ['background-color: #d4edda'] * 2 + [''] * 2
+                        elif row['Winner'] == 'B':
+                            return [''] * 2 + ['background-color: #d4edda'] * 2
+                        else:
+                            return [''] * 4
                     
-                    with d_col1:
-                        st.markdown("**🛡️ Hedge Monitor (Rolling 60d Correlation vs SPY)**")
-                        st.caption("Lower is better for hedging. >0.8 means your portfolio moves exactly like the market.")
-                        st.line_chart(roll_corr)
-                        
-                    with d_col2:
-                        st.markdown("**📉 Fragility Gauge**")
-                        st.metric(
-                            label="Downside Capture Ratio", 
-                            value=f"{dcr:.2f}", 
-                            delta="< 1.0 is Good" if dcr < 1.0 else "High Fragility",
-                            delta_color="normal" if dcr < 1.0 else "inverse"
-                        )
-                        st.info(f"""
-                        **Interpretation:**
-                        A value of **{dcr:.2f}** means that for every -1% the market drops, 
-                        your portfolio captures **-{dcr:.2f}%**.
-                        """)
+                    # Display with formatting
+                    st.dataframe(
+                        overall_df.style.apply(highlight_winner, axis=1),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # --- Regime-Conditional Comparison ---
+                    st.markdown("---")
+                    st.subheader("🌍 Performance by Market Regime")
+                    
+                    regime_tabs = st.tabs(["🟢 Stable Growth", "🟡 Elevated Uncertainty", "🔴 High Stress"])
+                    
+                    for idx, regime_code in enumerate([0, 1, 2]):
+                        with regime_tabs[idx]:
+                            regime_comp = engine.compare_by_regime(regime_code)
+                            regime_df = format_comparison_table(regime_comp)
+                            
+                            st.markdown(f"**{regime_comp['regime_name']}**")
+                            st.dataframe(
+                                regime_df.style.apply(highlight_winner, axis=1),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                    
+                    # --- Decision Summary ---
+                    st.markdown("---")
+                    st.subheader("💡 Decision Summary")
+                    
+                    summary = engine.generate_decision_summary()
+                    st.info(summary)
+                    
+                    # --- Cumulative Performance Chart ---
+                    st.markdown("---")
+                    st.subheader("📈 Cumulative Performance Comparison")
+                    
+                    # Calculate cumulative returns
+                    cum_a = (1 + port_a.portfolio_returns).cumprod()
+                    cum_b = (1 + port_b.portfolio_returns).cumprod()
+                    
+                    # Align dates
+                    comparison_df = pd.DataFrame({
+                        'Portfolio A': cum_a,
+                        'Portfolio B': cum_b
+                    }).dropna()
+                    
+                    fig = px.line(
+                        comparison_df,
+                        title="Cumulative Growth Comparison",
+                        labels={'value': 'Growth ($1 invested)', 'index': 'Date'}
+                    )
+                    fig.update_layout(hovermode='x unified')
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                except Exception as e:
+                    st.error(f"Error during comparison: {str(e)}")
+                    st.exception(e)
 
-                    # 6. Cumulative Return Chart
-                    st.markdown("#### Cumulative Growth (Log Scale)")
-                    cum_ret = (1 + merged['Portfolio_Ret']).cumprod()
-                    fig_growth = px.line(cum_ret, title="Portfolio Growth")
-                    st.plotly_chart(fig_growth, use_container_width=True)
 
 # --- Tab 3: Future Risk Lab ---
 

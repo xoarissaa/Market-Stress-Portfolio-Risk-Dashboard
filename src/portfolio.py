@@ -67,30 +67,125 @@ class Portfolio:
         Fetches adjusted close prices for portfolio assets.
         """
         print(f"Fetching portfolio data for: {self.tickers}")
-        df = yf.download(
-            self.tickers, 
-            start=start_date, 
-            end=end_date, 
-            group_by='ticker', 
-            auto_adjust=True,
-            threads=True
-        )
+        
+        try:
+            # Disable threads as they can cause issues in Streamlit's threaded environment
+            # Use auto_adjust=True to get Adjusted Close directly in 'Close' column
+            df = yf.download(
+                self.tickers, 
+                start=start_date, 
+                end=end_date, 
+                group_by='ticker', 
+                auto_adjust=True,
+                threads=False,      # Set to False for reliability in Streamlit
+                progress=False
+            )
+        except Exception as e:
+            raise ValueError(f"Failed to download data from yfinance: {e}")
+        
+        if df is None or df.empty:
+            # Fallback: try once more without group_by if only one ticker
+            if len(self.tickers) == 1:
+                try:
+                    df = yf.download(self.tickers[0], start=start_date, end=end_date, auto_adjust=True, progress=False, threads=False)
+                except:
+                    pass
+            
+            if df is None or df.empty:
+                raise ValueError(f"No data downloaded for tickers: {self.tickers}. Check internet connection or ticker symbols.")
+        
+        # print(f"Raw download columns: {df.columns}") # Useful for debug
+
         
         prices = pd.DataFrame()
+        failed_tickers = []
+        
         for t in self.tickers:
-            # Handle Single Ticker case vs Multi Ticker result structure
+            series = None
             try:
-                if len(self.tickers) == 1:
-                    series = df['Close']
-                elif isinstance(df.columns, pd.MultiIndex):
-                    series = df[t]['Close']
-                else:
-                    series = df[t] # Fallback
-                prices[t] = series
-            except Exception as e:
-                print(f"Error extracting {t}: {e}")
+                # 1. Try to get from batch download (df)
+                ticker_df = pd.DataFrame()
                 
+                if isinstance(df.columns, pd.MultiIndex):
+                    if t in df.columns.levels[0]:
+                        ticker_df = df[t]
+                elif t in df.columns:
+                    res = df[t]
+                    if isinstance(res, pd.Series):
+                        series = res
+                    else:
+                        ticker_df = res
+                
+                # 2. If nothing from batch, try Ticker.history() (MORE RELIABLE FOR INDIVIDUALS)
+                if (series is None or series.empty or series.isna().all()) and ticker_df.empty:
+                    print(f"⚠️  Batch fail for {t}, trying history()...")
+                    ticker_obj = yf.Ticker(t)
+                    hist = ticker_obj.history(start=start_date, end=end_date, auto_adjust=True)
+                    if not hist.empty:
+                        ticker_df = hist
+                
+                # 3. Find a 'Close' series in whatever we got
+                if series is None and not ticker_df.empty:
+                    # Look for likely price columns
+                    price_cols = ['Close', 'Adj Close', 'adj close', 'close', 'Price', 'price']
+                    for col in price_cols:
+                        if col in ticker_df.columns:
+                            series = ticker_df[col]
+                            break
+                    
+                    # If still None, take the first column that isn't Volume
+                    if series is None:
+                        other_cols = [c for c in ticker_df.columns if 'Volume' not in str(c)]
+                        if other_cols:
+                            series = ticker_df[other_cols[0]]
+
+                if series is not None and not series.empty and not series.isna().all():
+                    prices[t] = series
+                    print(f"✓ {t}: {len(series.dropna())} days")
+                else:
+                    failed_tickers.append(t)
+                    print(f"⚠️  No valid price data found for {t}")
+                    
+            except Exception as e:
+                failed_tickers.append(t)
+                print(f"❌ Error extracting {t}: {e}")
+
+
+        
+        if prices.empty:
+            # Last ditch effort: try without group_by='ticker' if we only have one ticker
+            if len(self.tickers) == 1:
+                t = self.tickers[0]
+                try:
+                    df_simple = yf.download(t, start=start_date, end=end_date, auto_adjust=True, progress=False)
+                    if not df_simple.empty and 'Close' in df_simple.columns:
+                        prices[t] = df_simple['Close']
+                        failed_tickers = []
+                        print(f"✓ {t}: {len(prices[t].dropna())} days (with simple retrieval)")
+                except:
+                    pass
+            
+            if prices.empty:
+                raise ValueError(f"No valid data downloaded for any tickers: {self.tickers}. This may be due to an API issue or invalid tickers.")
+        
+        if failed_tickers:
+            print(f"⚠️  Failed to download: {failed_tickers}")
+        
+        # Drop rows where ANY ticker has NaN (all tickers must have data)
         self.data = prices.dropna()
+        
+        if self.data.empty:
+            raise ValueError(
+                f"No overlapping dates found for: {list(prices.columns)}. "
+                "Tickers might have different trading histories."
+            )
+        
+        # Normalize index: Remove timezone and set to midnight for better alignment
+        if self.data.index.tz is not None:
+            self.data.index = self.data.index.tz_localize(None)
+        self.data.index = pd.to_datetime(self.data.index).normalize()
+        
+        print(f"✓ Final dataset: {len(self.data)} days")
         self.calculate_returns()
         return self.data
 
@@ -158,11 +253,21 @@ class Portfolio:
         if self.portfolio_returns is None:
             raise ValueError("Portfolio returns not calculated. Call fetch_data() first.")
         
-        # Align regime data with portfolio returns
+        # Ensure both series have DatetimeIndex
+        portfolio_rets = self.portfolio_returns.copy()
+        regime_labels = regime_series.copy()
+        
+        # Align regime data with portfolio returns using inner join
         aligned = pd.DataFrame({
-            'returns': self.portfolio_returns,
-            'regime': regime_series
-        }).dropna()
+            'returns': portfolio_rets,
+            'regime': regime_labels
+        })
+        
+        # Only keep rows where both values exist
+        aligned = aligned.dropna()
+        
+        if len(aligned) == 0:
+            return {"Error": f"No overlapping data between portfolio and regime labels"}
         
         # Filter by regime
         regime_returns = aligned[aligned['regime'] == regime_code]['returns']

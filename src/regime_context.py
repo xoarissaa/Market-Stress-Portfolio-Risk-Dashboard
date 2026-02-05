@@ -31,6 +31,11 @@ class RegimeContext:
         
         self.regime_data = pd.read_parquet(self.regime_data_path)
         
+        # Normalize Index: Remove timezone and time for alignment
+        if self.regime_data.index.tz is not None:
+            self.regime_data.index = self.regime_data.index.tz_localize(None)
+        self.regime_data.index = pd.to_datetime(self.regime_data.index).normalize()
+        
         # Validate required columns
         required_cols = ['Regime_Label']
         missing = [col for col in required_cols if col not in self.regime_data.columns]
